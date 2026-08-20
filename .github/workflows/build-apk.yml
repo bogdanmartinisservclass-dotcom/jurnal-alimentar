@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/pip-constraints.txt
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -25,18 +28,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install buildozer cython==0.29.36
-
-      - name: Cache Buildozer global directory
-        uses: actions/cache@v4
-        with:
-          path: /root/.buildozer
-          key: buildozer-global-${{ hashFiles('buildozer.spec') }}
-
-      - name: Cache Buildozer project directory
-        uses: actions/cache@v4
-        with:
-          path: .buildozer
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
 
       - name: Build APK with Buildozer
         run: |
