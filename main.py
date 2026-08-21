@@ -916,9 +916,11 @@ class EcranPrincipal(BoxLayout):
         coloana.add_widget(rand_adauga)
 
         rand_liste = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(38), spacing=dp(8))
-        buton_bauturi = Button(text="Editeaza lista de bauturi", background_color=(0.5, 0.5, 0.5, 1))
+        buton_bauturi = Button(text="Editeaza bauturi", font_size="13sp",
+                                background_color=(0.5, 0.5, 0.5, 1))
         buton_bauturi.bind(on_release=lambda *_: self.deschide_lista_bauturi())
-        buton_cantitati = Button(text="Editeaza lista de cantitati", background_color=(0.5, 0.5, 0.5, 1))
+        buton_cantitati = Button(text="Editeaza cantitati", font_size="13sp",
+                                  background_color=(0.5, 0.5, 0.5, 1))
         buton_cantitati.bind(on_release=lambda *_: self.deschide_lista_cantitati())
         rand_liste.add_widget(buton_bauturi)
         rand_liste.add_widget(buton_cantitati)
