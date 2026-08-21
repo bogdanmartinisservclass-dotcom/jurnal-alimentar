@@ -374,7 +374,9 @@ class PopupIntrare(Popup):
         self.poza_cale = intrare_existenta["poza_cale"] if intrare_existenta else None
         self.mesaj_eroare_poza = None
 
-        continut = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(10), padding=dp(12))
+        continut = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(10),
+                                  padding=dp(12), size_hint_y=None)
+        continut.bind(minimum_height=continut.setter("height"))
 
         # --- ora ---
         rand_ora = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
@@ -432,7 +434,9 @@ class PopupIntrare(Popup):
         rand_butoane.add_widget(buton_anuleaza)
 
         continut.add_widget(rand_butoane)
-        self.content = continut
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        scroll.add_widget(continut)
+        self.content = scroll
 
     # ---------- poza (doar pentru mancare) ----------
 
@@ -441,10 +445,13 @@ class PopupIntrare(Popup):
 
         if self.mesaj_eroare_poza:
             eticheta_eroare = Label(
-                text=self.mesaj_eroare_poza, size_hint_y=None, height=dp(22),
-                color=(0.75, 0.2, 0.2, 1), halign="left", valign="middle",
+                text=self.mesaj_eroare_poza, size_hint_y=None,
+                color=(0.75, 0.2, 0.2, 1), halign="left", valign="top",
             )
-            eticheta_eroare.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            eticheta_eroare.bind(
+                width=lambda w, val: setattr(w, "text_size", (val, None)),
+                texture_size=lambda w, val: setattr(w, "height", val[1]),
+            )
             self.zona_poza.add_widget(eticheta_eroare)
 
         if self.poza_cale and os.path.exists(self.poza_cale):
@@ -484,8 +491,8 @@ class PopupIntrare(Popup):
         try:
             self.poza_cale = copiaza_poza_in_stocare(cale_sursa, self.folder_poze)
             self.mesaj_eroare_poza = None
-        except Exception:
-            self.mesaj_eroare_poza = "Nu s-a putut incarca poza. Incearca din nou."
+        except Exception as eroare:
+            self.mesaj_eroare_poza = "Eroare: %s" % (str(eroare)[:200],)
         self._redeseneaza_zona_poza()
 
     def _elimina_poza(self):
@@ -593,13 +600,13 @@ class PopupRaportSaptamanal(Popup):
 
         # --- navigare saptamana ---
         rand_nav = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(42), spacing=dp(6))
-        buton_prev = Button(text="< Saptamana trecuta")
+        buton_prev = Button(text="< Anterioara", size_hint_x=0.32, font_size="13sp")
         buton_prev.bind(on_release=lambda *_: self._schimba_saptamana(-7))
         eticheta_interval = Label(
             text="%s - %s" % (luni.strftime("%d %b"), duminica.strftime("%d %b %Y")),
-            bold=True, color=CULOARE_TEXT,
+            bold=True, color=CULOARE_TEXT, size_hint_x=0.36,
         )
-        buton_next = Button(text="Saptamana viitoare >")
+        buton_next = Button(text="Urmatoare >", size_hint_x=0.32, font_size="13sp")
         buton_next.bind(on_release=lambda *_: self._schimba_saptamana(7))
         rand_nav.add_widget(buton_prev)
         rand_nav.add_widget(eticheta_interval)
