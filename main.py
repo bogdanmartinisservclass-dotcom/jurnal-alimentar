@@ -417,7 +417,8 @@ class PopupIntrare(Popup):
                 if intrare_existenta and intrare_existenta["continut"] in valori
                 else valori[0]
             )
-            self.spinner_bautura = Spinner(text=text_initial, values=valori)
+            self.spinner_bautura = Spinner(text=text_initial, values=valori,
+                                            size_hint_y=None, height=dp(44))
             continut.add_widget(self.spinner_bautura)
 
         # --- butoane ---
