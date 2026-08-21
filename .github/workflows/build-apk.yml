@@ -5,21 +5,36 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/pip-constraints.txt
+
 jobs:
   build:
     runs-on: ubuntu-22.04
+    container:
+      image: python:3.11-bookworm
+
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git zip unzip openjdk-17-jdk autoconf libtool pkg-config \
+            zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev
+
+      - name: Install Buildozer and Cython
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+
       - name: Build APK with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: stable
+        run: |
+          yes | buildozer -v android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jurnal-alimentar-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
