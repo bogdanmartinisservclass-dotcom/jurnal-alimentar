@@ -89,11 +89,39 @@ def inceput_saptamana(zi_obj):
 def copiaza_poza_in_stocare(cale_sursa, folder_poze):
     """Copiaza o poza selectata in stocarea privata a aplicatiei si returneaza calea noua."""
     os.makedirs(folder_poze, exist_ok=True)
-    extensie = os.path.splitext(cale_sursa)[1].lower() or ".jpg"
+    extensie = os.path.splitext(cale_sursa)[1].lower()
+    if not extensie or len(extensie) > 5:
+        extensie = ".jpg"
     nume_nou = uuid.uuid4().hex + extensie
     cale_noua = os.path.join(folder_poze, nume_nou)
-    shutil.copyfile(cale_sursa, cale_noua)
+
+    if cale_sursa.startswith("content://"):
+        _copiaza_din_content_uri(cale_sursa, cale_noua)
+    else:
+        shutil.copyfile(cale_sursa, cale_noua)
     return cale_noua
+
+
+def _copiaza_din_content_uri(uri_str, cale_destinatie):
+    """Pe Android, poza aleasa din galerie vine ca un content:// URI, nu ca o
+    cale de fisier obisnuita. Deschidem un descriptor de fisier prin
+    ContentResolver-ul Android si il citim ca pe un fisier normal."""
+    from jnius import autoclass
+
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Uri = autoclass("android.net.Uri")
+    activity = PythonActivity.mActivity
+    resolver = activity.getContentResolver()
+    uri = Uri.parse(uri_str)
+
+    descriptor_parcel = resolver.openFileDescriptor(uri, "r")
+    descriptor_brut = descriptor_parcel.getFd()
+    descriptor_python = os.dup(descriptor_brut)
+    descriptor_parcel.close()
+
+    with os.fdopen(descriptor_python, "rb") as f_in:
+        with open(cale_destinatie, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
 
 
 class BazaDeDate:
@@ -122,6 +150,15 @@ class BazaDeDate:
             """
         )
         self.conn.commit()
+
+        # migrare defensiva: daca baza de date exista deja dintr-o
+        # versiune anterioara (fara coloana poza_cale), o adaugam acum
+        try:
+            self.conn.execute("ALTER TABLE intrari ADD COLUMN poza_cale TEXT")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # coloana exista deja
+
         cur = self.conn.execute("SELECT COUNT(*) FROM bauturi")
         if cur.fetchone()[0] == 0:
             for nume in BAUTURI_INITIALE:
@@ -335,6 +372,7 @@ class PopupIntrare(Popup):
         self.on_salveaza = on_salveaza
         self.on_sterge = on_sterge
         self.poza_cale = intrare_existenta["poza_cale"] if intrare_existenta else None
+        self.mesaj_eroare_poza = None
 
         continut = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(10), padding=dp(12))
 
@@ -401,6 +439,14 @@ class PopupIntrare(Popup):
     def _redeseneaza_zona_poza(self):
         self.zona_poza.clear_widgets()
 
+        if self.mesaj_eroare_poza:
+            eticheta_eroare = Label(
+                text=self.mesaj_eroare_poza, size_hint_y=None, height=dp(22),
+                color=(0.75, 0.2, 0.2, 1), halign="left", valign="middle",
+            )
+            eticheta_eroare.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            self.zona_poza.add_widget(eticheta_eroare)
+
         if self.poza_cale and os.path.exists(self.poza_cale):
             previzualizare = Image(source=self.poza_cale, size_hint_y=None, height=dp(120),
                                     allow_stretch=True, keep_ratio=True)
@@ -420,11 +466,13 @@ class PopupIntrare(Popup):
         self.zona_poza.add_widget(rand_butoane_poza)
 
     def _alege_poza(self):
+        self.mesaj_eroare_poza = None
         try:
             from plyer import filechooser
             filechooser.open_file(on_selection=self._poza_selectata)
         except Exception:
-            pass
+            self.mesaj_eroare_poza = "Nu s-a putut deschide galeria."
+            self._redeseneaza_zona_poza()
 
     def _poza_selectata(self, selectie):
         if not selectie:
@@ -435,8 +483,9 @@ class PopupIntrare(Popup):
     def _aplica_poza(self, cale_sursa):
         try:
             self.poza_cale = copiaza_poza_in_stocare(cale_sursa, self.folder_poze)
+            self.mesaj_eroare_poza = None
         except Exception:
-            return
+            self.mesaj_eroare_poza = "Nu s-a putut incarca poza. Incearca din nou."
         self._redeseneaza_zona_poza()
 
     def _elimina_poza(self):
