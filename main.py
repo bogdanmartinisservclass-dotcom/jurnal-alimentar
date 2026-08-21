@@ -63,6 +63,7 @@ CULOARE_MANCARE = (0.35, 0.65, 0.35, 1)
 CULOARE_BAUTURA = (0.30, 0.50, 0.75, 1)
 
 BAUTURI_INITIALE = ["Apa", "Cafea", "Ceai", "Lapte", "Suc", "Limonada"]
+CANTITATI_INITIALE = ["0.25", "0.5", "0.75", "1", "1.5", "2", "2.5"]
 
 ORE = ["%02d" % h for h in range(24)]
 MINUTE = ["00", "15", "30", "45"]
@@ -79,6 +80,23 @@ def trunchiaza(text, lungime=LUNGIME_TRUNCHIERE):
     if len(text) <= lungime:
         return text
     return text[:lungime].rstrip() + "..."
+
+
+def formateaza_litri(valoare_float):
+    """Formateaza un numar de litri fara zerouri inutile (1.0 -> '1L', 0.5 -> '0.5L')."""
+    text = ("%.2f" % valoare_float).rstrip("0").rstrip(".")
+    return "%sL" % (text if text else "0")
+
+
+def cantitate_numerica(intrare):
+    """Extrage cantitatea (litri) unei intrari ca numar, sau 0.0 daca lipseste/invalida."""
+    cantitate = intrare.get("cantitate")
+    if not cantitate:
+        return 0.0
+    try:
+        return float(str(cantitate).replace(",", "."))
+    except ValueError:
+        return 0.0
 
 
 def inceput_saptamana(zi_obj):
@@ -149,15 +167,25 @@ class BazaDeDate:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cantitati (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                valoare TEXT UNIQUE NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
         # migrare defensiva: daca baza de date exista deja dintr-o
-        # versiune anterioara (fara coloana poza_cale), o adaugam acum
-        try:
-            self.conn.execute("ALTER TABLE intrari ADD COLUMN poza_cale TEXT")
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass  # coloana exista deja
+        # versiune anterioara (fara coloanele poza_cale / cantitate), le
+        # adaugam acum
+        for coloana in ("poza_cale", "cantitate"):
+            try:
+                self.conn.execute("ALTER TABLE intrari ADD COLUMN %s TEXT" % coloana)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # coloana exista deja
 
         cur = self.conn.execute("SELECT COUNT(*) FROM bauturi")
         if cur.fetchone()[0] == 0:
@@ -167,41 +195,52 @@ class BazaDeDate:
                 )
             self.conn.commit()
 
+        cur = self.conn.execute("SELECT COUNT(*) FROM cantitati")
+        if cur.fetchone()[0] == 0:
+            for valoare in CANTITATI_INITIALE:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO cantitati (valoare) VALUES (?)", (valoare,)
+                )
+            self.conn.commit()
+
     # ---------- intrari ----------
 
     def intrari_pentru_zi(self, zi_str):
         cur = self.conn.execute(
-            "SELECT id, ora, tip, continut, poza_cale FROM intrari "
+            "SELECT id, ora, tip, continut, poza_cale, cantitate FROM intrari "
             "WHERE zi = ? ORDER BY ora ASC, id ASC",
             (zi_str,),
         )
         return [
-            {"id": r[0], "ora": r[1], "tip": r[2], "continut": r[3], "poza_cale": r[4]}
+            {"id": r[0], "ora": r[1], "tip": r[2], "continut": r[3],
+             "poza_cale": r[4], "cantitate": r[5]}
             for r in cur.fetchall()
         ]
 
     def intrari_in_interval(self, zi_start_str, zi_sfarsit_str):
         cur = self.conn.execute(
-            "SELECT id, zi, ora, tip, continut, poza_cale FROM intrari "
+            "SELECT id, zi, ora, tip, continut, poza_cale, cantitate FROM intrari "
             "WHERE zi >= ? AND zi <= ? ORDER BY zi ASC, ora ASC, id ASC",
             (zi_start_str, zi_sfarsit_str),
         )
         return [
-            {"id": r[0], "zi": r[1], "ora": r[2], "tip": r[3], "continut": r[4], "poza_cale": r[5]}
+            {"id": r[0], "zi": r[1], "ora": r[2], "tip": r[3], "continut": r[4],
+             "poza_cale": r[5], "cantitate": r[6]}
             for r in cur.fetchall()
         ]
 
-    def adauga_intrare(self, zi_str, ora, tip, continut, poza_cale=None):
+    def adauga_intrare(self, zi_str, ora, tip, continut, poza_cale=None, cantitate=None):
         self.conn.execute(
-            "INSERT INTO intrari (zi, ora, tip, continut, poza_cale) VALUES (?, ?, ?, ?, ?)",
-            (zi_str, ora, tip, continut, poza_cale),
+            "INSERT INTO intrari (zi, ora, tip, continut, poza_cale, cantitate) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (zi_str, ora, tip, continut, poza_cale, cantitate),
         )
         self.conn.commit()
 
-    def actualizeaza_intrare(self, id_intrare, ora, tip, continut, poza_cale=None):
+    def actualizeaza_intrare(self, id_intrare, ora, tip, continut, poza_cale=None, cantitate=None):
         self.conn.execute(
-            "UPDATE intrari SET ora = ?, tip = ?, continut = ?, poza_cale = ? WHERE id = ?",
-            (ora, tip, continut, poza_cale, id_intrare),
+            "UPDATE intrari SET ora = ?, tip = ?, continut = ?, poza_cale = ?, cantitate = ? WHERE id = ?",
+            (ora, tip, continut, poza_cale, cantitate, id_intrare),
         )
         self.conn.commit()
 
@@ -231,6 +270,28 @@ class BazaDeDate:
 
     def sterge_bautura(self, nume):
         self.conn.execute("DELETE FROM bauturi WHERE nume = ?", (nume,))
+        self.conn.commit()
+
+    # ---------- cantitati (litri) ----------
+
+    def cantitati_lista(self):
+        cur = self.conn.execute("SELECT valoare FROM cantitati")
+        valori = [r[0] for r in cur.fetchall()]
+        return sorted(valori, key=lambda v: float(v.replace(",", ".")))
+
+    def adauga_cantitate(self, valoare):
+        valoare = valoare.strip().replace(",", ".")
+        if not valoare:
+            return
+        try:
+            float(valoare)
+        except ValueError:
+            return
+        self.conn.execute("INSERT OR IGNORE INTO cantitati (valoare) VALUES (?)", (valoare,))
+        self.conn.commit()
+
+    def sterge_cantitate(self, valoare):
+        self.conn.execute("DELETE FROM cantitati WHERE valoare = ?", (valoare,))
         self.conn.commit()
 
 
@@ -325,8 +386,12 @@ class RandIntrare(ButtonBehavior, BoxLayout):
             miniatura_container.add_widget(miniatura)
             self.add_widget(miniatura_container)
 
+        text_continut = intrare["continut"]
+        if intrare["tip"] == "bautura" and intrare.get("cantitate"):
+            text_continut = "%s (%s)" % (text_continut, formateaza_litri(cantitate_numerica(intrare)))
+
         eticheta_continut = Label(
-            text=trunchiaza(intrare["continut"]),
+            text=trunchiaza(text_continut),
             color=CULOARE_TEXT, halign="left", valign="middle",
         )
         eticheta_continut.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
@@ -362,12 +427,12 @@ class ListaIntrariZi(BoxLayout):
 class PopupIntrare(Popup):
     """Popup pentru adaugarea/editarea unei intrari (mancare sau bautura)."""
 
-    def __init__(self, tip, bauturi_disponibile, intrare_existenta, folder_poze,
+    def __init__(self, tip, bauturi_disponibile, cantitati_disponibile, intrare_existenta, folder_poze,
                  on_salveaza, on_sterge, **kwargs):
         titlu = "Adauga mancare" if tip == "mancare" else "Adauga bautura"
         if intrare_existenta is not None:
             titlu = "Editeaza mancare" if tip == "mancare" else "Editeaza bautura"
-        super().__init__(title=titlu, size_hint=(0.9, 0.75 if tip == "mancare" else 0.55), **kwargs)
+        super().__init__(title=titlu, size_hint=(0.9, 0.75 if tip == "mancare" else 0.68), **kwargs)
 
         self.tip = tip
         self.intrare_existenta = intrare_existenta
@@ -420,6 +485,21 @@ class PopupIntrare(Popup):
             self.spinner_bautura = Spinner(text=text_initial, values=valori,
                                             size_hint_y=None, height=dp(44))
             continut.add_widget(self.spinner_bautura)
+
+            continut.add_widget(Label(text="Cantitate:", size_hint_y=None, height=dp(20),
+                                       color=CULOARE_TEXT, halign="left"))
+            valori_cantitate = cantitati_disponibile if cantitati_disponibile else ["0.5"]
+            cantitate_initiala = (
+                intrare_existenta["cantitate"]
+                if intrare_existenta and intrare_existenta.get("cantitate") in valori_cantitate
+                else valori_cantitate[0]
+            )
+            self.spinner_cantitate = Spinner(
+                text="%sL" % cantitate_initiala,
+                values=["%sL" % v for v in valori_cantitate],
+                size_hint_y=None, height=dp(44),
+            )
+            continut.add_widget(self.spinner_cantitate)
 
         # --- butoane ---
         rand_butoane = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(46), spacing=dp(8))
@@ -520,11 +600,13 @@ class PopupIntrare(Popup):
             if not continut:
                 return
             poza_cale = self.poza_cale
+            cantitate = None
         else:
             continut = self.spinner_bautura.text
             poza_cale = None
+            cantitate = self.spinner_cantitate.text[:-1]  # eliminam sufixul "L"
         id_existent = self.intrare_existenta["id"] if self.intrare_existenta else None
-        self.on_salveaza(id_existent, ora, self.tip, continut, poza_cale)
+        self.on_salveaza(id_existent, ora, self.tip, continut, poza_cale, cantitate)
         self.dismiss()
 
     def _sterge(self):
@@ -592,6 +674,67 @@ class PopupBauturi(Popup):
         self.on_schimbare()
 
 
+class PopupCantitati(Popup):
+    """Popup pentru administrarea listei de cantitati / litri (adaugare/stergere)."""
+
+    def __init__(self, db, on_schimbare, **kwargs):
+        super().__init__(title="Lista de cantitati (litri)", size_hint=(0.9, 0.7), **kwargs)
+        self.db = db
+        self.on_schimbare = on_schimbare
+
+        radacina = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(8), padding=dp(12))
+
+        self.scroll = ScrollView(size_hint=(1, 1))
+        self.lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
+        self.lista.bind(minimum_height=self.lista.setter("height"))
+        self.scroll.add_widget(self.lista)
+        radacina.add_widget(self.scroll)
+
+        rand_adauga = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
+        self.txt_noua = TextInput(hint_text="Cantitate noua (ex: 0.4)", multiline=False,
+                                   input_filter="float")
+        buton_adauga = Button(text="Adauga", size_hint_x=None, width=dp(90),
+                               background_color=(0.3, 0.6, 0.3, 1))
+        buton_adauga.bind(on_release=lambda *_: self._adauga())
+        rand_adauga.add_widget(self.txt_noua)
+        rand_adauga.add_widget(buton_adauga)
+        radacina.add_widget(rand_adauga)
+
+        buton_inchide = Button(text="Inchide", size_hint_y=None, height=dp(44))
+        buton_inchide.bind(on_release=lambda *_: self.dismiss())
+        radacina.add_widget(buton_inchide)
+
+        self.content = radacina
+        self._reincarca()
+
+    def _reincarca(self):
+        self.lista.clear_widgets()
+        for valoare in self.db.cantitati_lista():
+            rand = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(36), spacing=dp(6))
+            eticheta = Label(text="%sL" % valoare, color=CULOARE_TEXT, halign="left", valign="middle")
+            eticheta.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            buton_sterge = Button(text="Sterge", size_hint_x=None, width=dp(80),
+                                   background_color=(0.7, 0.3, 0.3, 1))
+            buton_sterge.bind(on_release=lambda _inst, v=valoare: self._sterge(v))
+            rand.add_widget(eticheta)
+            rand.add_widget(buton_sterge)
+            self.lista.add_widget(rand)
+
+    def _adauga(self):
+        valoare = self.txt_noua.text.strip()
+        if not valoare:
+            return
+        self.db.adauga_cantitate(valoare)
+        self.txt_noua.text = ""
+        self._reincarca()
+        self.on_schimbare()
+
+    def _sterge(self, valoare):
+        self.db.sterge_cantitate(valoare)
+        self._reincarca()
+        self.on_schimbare()
+
+
 class PopupRaportSaptamanal(Popup):
     """Popup cu rezumatul saptamanii calendaristice curente si frecventa bauturilor."""
 
@@ -635,23 +778,40 @@ class PopupRaportSaptamanal(Popup):
         for i in range(7):
             zi_obj = luni + timedelta(days=i)
             zi_str = zi_obj.isoformat()
+            intrari_zi = intrari_pe_zi.get(zi_str, [])
             coloana.add_widget(Label(
                 text="%s, %s" % (ZILE_RO_LUNGI[i], zi_obj.strftime("%d %B")),
                 bold=True, size_hint_y=None, height=dp(24), color=CULOARE_TEXT,
                 halign="left", valign="middle",
             ))
             lista_zi = ListaIntrariZi(editabil=False)
-            lista_zi.actualizeaza(intrari_pe_zi.get(zi_str, []))
+            lista_zi.actualizeaza(intrari_zi)
             coloana.add_widget(lista_zi)
 
-        # --- frecventa bauturilor ---
+            total_zi_litri = sum(
+                cantitate_numerica(intrare) for intrare in intrari_zi if intrare["tip"] == "bautura"
+            )
+            eticheta_total_zi = Label(
+                text="Total lichide: %s" % formateaza_litri(total_zi_litri),
+                size_hint_y=None, height=dp(20), italic=True,
+                color=(0.35, 0.60, 0.90, 1), halign="left", valign="middle",
+            )
+            eticheta_total_zi.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            coloana.add_widget(eticheta_total_zi)
+
+        # --- frecventa si cantitate bauturilor ---
         coloana.add_widget(Label(
             text="Bauturi consumate saptamana aceasta", bold=True, size_hint_y=None,
             height=dp(28), color=CULOARE_TEXT, halign="left", valign="middle",
         ))
-        contor = Counter(
-            intrare["continut"] for intrare in intrari if intrare["tip"] == "bautura"
-        )
+        intrari_bautura = [i for i in intrari if i["tip"] == "bautura"]
+        contor = Counter(intrare["continut"] for intrare in intrari_bautura)
+        litri_pe_bautura = {}
+        for intrare in intrari_bautura:
+            litri_pe_bautura[intrare["continut"]] = (
+                litri_pe_bautura.get(intrare["continut"], 0.0) + cantitate_numerica(intrare)
+            )
+
         if not contor:
             coloana.add_widget(Label(
                 text="(nicio bautura notata)", size_hint_y=None, height=dp(24),
@@ -660,11 +820,21 @@ class PopupRaportSaptamanal(Popup):
         else:
             for nume, numar in sorted(contor.items(), key=lambda x: (-x[1], x[0])):
                 rand = Label(
-                    text="%s: %d" % (nume, numar), size_hint_y=None, height=dp(22),
+                    text="%s: %d ori, %s" % (nume, numar, formateaza_litri(litri_pe_bautura[nume])),
+                    size_hint_y=None, height=dp(22),
                     color=CULOARE_TEXT, halign="left", valign="middle",
                 )
                 rand.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
                 coloana.add_widget(rand)
+
+        total_saptamanal_litri = sum(litri_pe_bautura.values())
+        eticheta_total_saptamana = Label(
+            text="Total saptamanal: %s" % formateaza_litri(total_saptamanal_litri),
+            bold=True, size_hint_y=None, height=dp(26),
+            color=(0.35, 0.60, 0.90, 1), halign="left", valign="middle",
+        )
+        eticheta_total_saptamana.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        coloana.add_widget(eticheta_total_saptamana)
 
         scroll.add_widget(coloana)
         radacina.add_widget(scroll)
@@ -745,10 +915,14 @@ class EcranPrincipal(BoxLayout):
         rand_adauga.add_widget(buton_adauga_bautura)
         coloana.add_widget(rand_adauga)
 
-        buton_bauturi = Button(text="Editeaza lista de bauturi", size_hint_y=None, height=dp(38),
-                                background_color=(0.5, 0.5, 0.5, 1))
+        rand_liste = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(38), spacing=dp(8))
+        buton_bauturi = Button(text="Editeaza lista de bauturi", background_color=(0.5, 0.5, 0.5, 1))
         buton_bauturi.bind(on_release=lambda *_: self.deschide_lista_bauturi())
-        coloana.add_widget(buton_bauturi)
+        buton_cantitati = Button(text="Editeaza lista de cantitati", background_color=(0.5, 0.5, 0.5, 1))
+        buton_cantitati.bind(on_release=lambda *_: self.deschide_lista_cantitati())
+        rand_liste.add_widget(buton_bauturi)
+        rand_liste.add_widget(buton_cantitati)
+        coloana.add_widget(rand_liste)
 
         # --- previzualizare zile anterioare ---
         coloana.add_widget(self._separator("Zilele anterioare"))
@@ -871,6 +1045,7 @@ class EcranPrincipal(BoxLayout):
         popup = PopupIntrare(
             tip=tip,
             bauturi_disponibile=self.db.bauturi_lista(),
+            cantitati_disponibile=self.db.cantitati_lista(),
             intrare_existenta=None,
             folder_poze=self.folder_poze,
             on_salveaza=self._salveaza_intrare,
@@ -882,6 +1057,7 @@ class EcranPrincipal(BoxLayout):
         popup = PopupIntrare(
             tip=intrare["tip"],
             bauturi_disponibile=self.db.bauturi_lista(),
+            cantitati_disponibile=self.db.cantitati_lista(),
             intrare_existenta=intrare,
             folder_poze=self.folder_poze,
             on_salveaza=self._salveaza_intrare,
@@ -889,12 +1065,12 @@ class EcranPrincipal(BoxLayout):
         )
         popup.open()
 
-    def _salveaza_intrare(self, id_existent, ora, tip, continut, poza_cale):
+    def _salveaza_intrare(self, id_existent, ora, tip, continut, poza_cale, cantitate):
         zi_str = self.zi_selectata.isoformat()
         if id_existent is None:
-            self.db.adauga_intrare(zi_str, ora, tip, continut, poza_cale)
+            self.db.adauga_intrare(zi_str, ora, tip, continut, poza_cale, cantitate)
         else:
-            self.db.actualizeaza_intrare(id_existent, ora, tip, continut, poza_cale)
+            self.db.actualizeaza_intrare(id_existent, ora, tip, continut, poza_cale, cantitate)
         self.selecteaza_ziua(self.zi_selectata)
 
     def _sterge_intrare(self, id_intrare):
@@ -903,6 +1079,10 @@ class EcranPrincipal(BoxLayout):
 
     def deschide_lista_bauturi(self):
         popup = PopupBauturi(self.db, on_schimbare=lambda: self.selecteaza_ziua(self.zi_selectata))
+        popup.open()
+
+    def deschide_lista_cantitati(self):
+        popup = PopupCantitati(self.db, on_schimbare=lambda: self.selecteaza_ziua(self.zi_selectata))
         popup.open()
 
     def deschide_raport(self):
