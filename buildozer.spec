@@ -9,12 +9,12 @@ source.include_exts = py,png,jpg,kv,atlas
 
 version = 1.0
 
-requirements = python3==3.11.9,hostpython3==3.11.9,kivy
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy,plyer
 
 orientation = portrait
 fullscreen = 0
 
-android.permissions = 
+android.permissions = READ_MEDIA_IMAGES,READ_EXTERNAL_STORAGE
 
 android.api = 33
 android.minapi = 21
