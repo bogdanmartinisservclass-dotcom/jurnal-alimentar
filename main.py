@@ -320,7 +320,10 @@ class RandIntrare(ButtonBehavior, BoxLayout):
         if intrare.get("poza_cale") and os.path.exists(intrare["poza_cale"]):
             miniatura = Image(source=intrare["poza_cale"], size_hint=(None, None),
                                size=(dp(26), dp(26)), allow_stretch=True, keep_ratio=True)
-            self.add_widget(miniatura)
+            miniatura_container = AnchorLayout(size_hint_x=None, width=dp(30),
+                                                anchor_x="center", anchor_y="center")
+            miniatura_container.add_widget(miniatura)
+            self.add_widget(miniatura_container)
 
         eticheta_continut = Label(
             text=trunchiaza(intrare["continut"]),
@@ -482,7 +485,12 @@ class PopupIntrare(Popup):
             self._redeseneaza_zona_poza()
 
     def _poza_selectata(self, selectie):
-        if not selectie:
+        if not selectie or not selectie[0]:
+            self.mesaj_eroare_poza = (
+                "Nu s-a putut selecta poza. Verifica in setarile telefonului "
+                "ca aplicatia are permisiune la Poze/Fotografii, apoi incearca din nou."
+            )
+            Clock.schedule_once(lambda *_: self._redeseneaza_zona_poza(), 0)
             return
         cale_sursa = selectie[0]
         Clock.schedule_once(lambda *_: self._aplica_poza(cale_sursa), 0)
@@ -599,14 +607,15 @@ class PopupRaportSaptamanal(Popup):
         duminica = luni + timedelta(days=6)
 
         # --- navigare saptamana ---
+        CULOARE_ALBASTRU_DESCHIS = (0.35, 0.60, 0.90, 1)
         rand_nav = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(42), spacing=dp(6))
-        buton_prev = Button(text="< Anterioara", size_hint_x=0.32, font_size="13sp")
+        buton_prev = Button(text="<", size_hint_x=None, width=dp(44))
         buton_prev.bind(on_release=lambda *_: self._schimba_saptamana(-7))
         eticheta_interval = Label(
             text="%s - %s" % (luni.strftime("%d %b"), duminica.strftime("%d %b %Y")),
-            bold=True, color=CULOARE_TEXT, size_hint_x=0.36,
+            bold=True, color=CULOARE_ALBASTRU_DESCHIS, font_size="13sp",
         )
-        buton_next = Button(text="Urmatoare >", size_hint_x=0.32, font_size="13sp")
+        buton_next = Button(text=">", size_hint_x=None, width=dp(44))
         buton_next.bind(on_release=lambda *_: self._schimba_saptamana(7))
         rand_nav.add_widget(buton_prev)
         rand_nav.add_widget(eticheta_interval)
@@ -932,8 +941,19 @@ class EcranBunVenit(Screen):
 class JurnalAlimentarApp(App):
     title = "Jurnal Alimentar"
 
+    def _cere_permisiuni_android(self):
+        try:
+            from android.permissions import request_permissions, Permission
+            request_permissions([
+                Permission.READ_MEDIA_IMAGES,
+                Permission.READ_EXTERNAL_STORAGE,
+            ])
+        except Exception:
+            pass  # nu suntem pe Android (ex. testare pe calculator)
+
     def build(self):
         Window.clearcolor = CULOARE_FUNDAL
+        self._cere_permisiuni_android()
         cale_db = os.path.join(self.user_data_dir, "jurnal_alimentar.db")
         self.db = BazaDeDate(cale_db)
         folder_poze = os.path.join(self.user_data_dir, "poze")
