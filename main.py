@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Jurnal Alimentar - aplicatie Kivy pentru Android.
-Calendar in care, pentru fiecare zi, se pot introduce/edita/sterge
-notite pentru Mic dejun, Pranz si Cina. In partea de jos se afiseaza,
-needitabil, ultimele 1-2 zile anterioare zilei selectate.
+
+Calendar in care, pentru fiecare zi, se pot adauga intrari cu ora,
+tip (mancare / bautura) si continut. Intrarile apar cronologic,
+pot fi atinse pentru editare/stergere. Bauturile se aleg dintr-o
+lista predefinita, editabila din aplicatie.
 
 Datele sunt salvate local intr-o baza de date SQLite, in directorul
 privat al aplicatiei (App.user_data_dir), deci raman pe telefon
@@ -16,17 +18,22 @@ import sqlite3
 from datetime import date, timedelta
 
 from kivy.app import App
+from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
+from kivy.graphics import Color, Rectangle
+from kivy.uix.anchorlayout import AnchorLayout
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
+from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
-from kivy.graphics import Color, Rectangle
 
 LUNI_RO = [
     "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
@@ -35,65 +42,140 @@ LUNI_RO = [
 ZILE_RO = ["Lu", "Ma", "Mi", "Jo", "Vi", "Sa", "Du"]
 
 CULOARE_FUNDAL = (0.97, 0.97, 0.95, 1)
+CULOARE_TEXT = (0.12, 0.12, 0.12, 1)
 CULOARE_ZI_NORMALA = (0.85, 0.85, 0.85, 1)
 CULOARE_ZI_CU_DATE = (0.55, 0.78, 0.55, 1)
 CULOARE_ZI_SELECTATA = (0.30, 0.55, 0.85, 1)
-CULOARE_AZI_BORDURA = (0.85, 0.25, 0.25, 1)
+
+CULOARE_MANCARE = (0.35, 0.65, 0.35, 1)
+CULOARE_BAUTURA = (0.30, 0.50, 0.75, 1)
+
+BAUTURI_INITIALE = ["Apa", "Cafea", "Ceai", "Lapte", "Suc", "Limonada"]
+
+ORE = ["%02d" % h for h in range(24)]
+MINUTE = ["00", "15", "30", "45"]
+
+LUNGIME_TRUNCHIERE = 34
 
 
 def data_azi():
     return date.today()
 
 
+def trunchiaza(text, lungime=LUNGIME_TRUNCHIERE):
+    text = text or ""
+    if len(text) <= lungime:
+        return text
+    return text[:lungime].rstrip() + "..."
+
+
 class BazaDeDate:
-    """Strat simplu peste SQLite pentru mesele fiecarei zile."""
+    """Strat peste SQLite: intrari (mancare/bautura) si lista de bauturi."""
 
     def __init__(self, cale_fisier):
         self.conn = sqlite3.connect(cale_fisier)
         self.conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS mese (
-                zi TEXT PRIMARY KEY,
-                mic_dejun TEXT,
-                pranz TEXT,
-                cina TEXT
+            CREATE TABLE IF NOT EXISTS intrari (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zi TEXT NOT NULL,
+                ora TEXT NOT NULL,
+                tip TEXT NOT NULL,
+                continut TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bauturi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nume TEXT UNIQUE NOT NULL
             )
             """
         )
         self.conn.commit()
+        cur = self.conn.execute("SELECT COUNT(*) FROM bauturi")
+        if cur.fetchone()[0] == 0:
+            for nume in BAUTURI_INITIALE:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO bauturi (nume) VALUES (?)", (nume,)
+                )
+            self.conn.commit()
 
-    def citeste(self, zi_str):
+    # ---------- intrari ----------
+
+    def intrari_pentru_zi(self, zi_str):
         cur = self.conn.execute(
-            "SELECT mic_dejun, pranz, cina FROM mese WHERE zi = ?", (zi_str,)
+            "SELECT id, ora, tip, continut FROM intrari WHERE zi = ? ORDER BY ora ASC, id ASC",
+            (zi_str,),
         )
-        rand = cur.fetchone()
-        if rand is None:
-            return None
-        return {"mic_dejun": rand[0] or "", "pranz": rand[1] or "", "cina": rand[2] or ""}
+        return [
+            {"id": r[0], "ora": r[1], "tip": r[2], "continut": r[3]}
+            for r in cur.fetchall()
+        ]
 
-    def salveaza(self, zi_str, mic_dejun, pranz, cina):
+    def adauga_intrare(self, zi_str, ora, tip, continut):
         self.conn.execute(
-            """
-            INSERT INTO mese (zi, mic_dejun, pranz, cina) VALUES (?, ?, ?, ?)
-            ON CONFLICT(zi) DO UPDATE SET
-                mic_dejun = excluded.mic_dejun,
-                pranz = excluded.pranz,
-                cina = excluded.cina
-            """,
-            (zi_str, mic_dejun, pranz, cina),
+            "INSERT INTO intrari (zi, ora, tip, continut) VALUES (?, ?, ?, ?)",
+            (zi_str, ora, tip, continut),
         )
         self.conn.commit()
 
-    def sterge(self, zi_str):
-        self.conn.execute("DELETE FROM mese WHERE zi = ?", (zi_str,))
+    def actualizeaza_intrare(self, id_intrare, ora, tip, continut):
+        self.conn.execute(
+            "UPDATE intrari SET ora = ?, tip = ?, continut = ? WHERE id = ?",
+            (ora, tip, continut, id_intrare),
+        )
+        self.conn.commit()
+
+    def sterge_intrare(self, id_intrare):
+        self.conn.execute("DELETE FROM intrari WHERE id = ?", (id_intrare,))
         self.conn.commit()
 
     def zile_cu_date_in_luna(self, an, luna):
         prefix = "%04d-%02d-" % (an, luna)
         cur = self.conn.execute(
-            "SELECT zi FROM mese WHERE zi LIKE ?", (prefix + "%",)
+            "SELECT DISTINCT zi FROM intrari WHERE zi LIKE ?", (prefix + "%",)
         )
-        return {rand[0] for rand in cur.fetchall()}
+        return {r[0] for r in cur.fetchall()}
+
+    # ---------- bauturi ----------
+
+    def bauturi_lista(self):
+        cur = self.conn.execute("SELECT nume FROM bauturi ORDER BY nume ASC")
+        return [r[0] for r in cur.fetchall()]
+
+    def adauga_bautura(self, nume):
+        nume = nume.strip()
+        if not nume:
+            return
+        self.conn.execute("INSERT OR IGNORE INTO bauturi (nume) VALUES (?)", (nume,))
+        self.conn.commit()
+
+    def sterge_bautura(self, nume):
+        self.conn.execute("DELETE FROM bauturi WHERE nume = ?", (nume,))
+        self.conn.commit()
+
+
+# ================= widget-uri reutilizabile =================
+
+
+class FundalColorat(BoxLayout):
+    """BoxLayout cu fundal desenat manual, intr-o culoare data."""
+
+    def __init__(self, culoare, **kwargs):
+        super().__init__(**kwargs)
+        with self.canvas.before:
+            self._culoare = Color(*culoare)
+            self._dreptunghi = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._actualizeaza, size=self._actualizeaza)
+
+    def _actualizeaza(self, *_a):
+        self._dreptunghi.pos = self.pos
+        self._dreptunghi.size = self.size
+
+    def seteaza_culoare(self, culoare):
+        self._culoare.rgba = culoare
 
 
 class ButonZi(Button):
@@ -103,69 +185,245 @@ class ButonZi(Button):
         super().__init__(text=text_zi, **kwargs)
         self.background_normal = ""
         self.background_down = ""
-        self.background_color = (0, 0, 0, 0)  # desenam noi fundalul
-        self.color = (0, 0, 0, 1)
+        self.background_color = (0, 0, 0, 0)
+        self.color = CULOARE_TEXT
         with self.canvas.before:
-            self._culoare_instr = Color(*culoare)
+            self._culoare = Color(*culoare)
             self._dreptunghi = Rectangle(pos=self.pos, size=self.size)
         self.bind(pos=self._actualizeaza, size=self._actualizeaza)
 
-    def _actualizeaza(self, *_args):
+    def _actualizeaza(self, *_a):
         self._dreptunghi.pos = self.pos
         self._dreptunghi.size = self.size
 
-    def seteaza_culoare(self, culoare):
-        self._culoare_instr.rgba = culoare
 
+class PatratColorat(Widget):
+    """Un mic patrat colorat (indicator de tip: mancare / bautura)."""
 
-class CutiePreview(BoxLayout):
-    """Caseta needitabila care arata mesele unei zile anterioare."""
+    CULORI = {"mancare": CULOARE_MANCARE, "bautura": CULOARE_BAUTURA}
 
-    def __init__(self, **kwargs):
-        super().__init__(orientation="vertical", spacing=dp(2), **kwargs)
+    def __init__(self, tip, **kwargs):
+        kwargs.setdefault("size_hint", (None, None))
+        kwargs.setdefault("size", (dp(14), dp(14)))
+        super().__init__(**kwargs)
         with self.canvas.before:
-            Color(0.90, 0.90, 0.88, 1)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
+            Color(*self.CULORI.get(tip, (0.6, 0.6, 0.6, 1)))
+            self._dreptunghi = Rectangle(pos=self.pos, size=self.size)
         self.bind(pos=self._actualizeaza, size=self._actualizeaza)
 
-        self.eticheta_data = Label(
-            text="", bold=True, size_hint_y=None, height=dp(20),
-            color=(0, 0, 0, 1), halign="left", valign="middle",
+    def _actualizeaza(self, *_a):
+        self._dreptunghi.pos = self.pos
+        self._dreptunghi.size = self.size
+
+
+class RandIntrare(ButtonBehavior, BoxLayout):
+    """O linie dintr-o zi: ora + patrat colorat + continut trunchiat. Atingerea deschide editarea."""
+
+    def __init__(self, intrare, on_tap=None, **kwargs):
+        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(34),
+                          spacing=dp(8), padding=(dp(4), 0), **kwargs)
+        self.intrare = intrare
+        if on_tap is not None:
+            self.bind(on_release=lambda *_: on_tap(intrare))
+
+        eticheta_ora = Label(
+            text=intrare["ora"], size_hint_x=None, width=dp(52), bold=True,
+            color=CULOARE_TEXT, halign="left", valign="middle",
         )
-        self.eticheta_data.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        self.eticheta_continut = Label(
-            text="", size_hint_y=None, color=(0.15, 0.15, 0.15, 1),
-            halign="left", valign="top",
+        eticheta_ora.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+
+        patrat = PatratColorat(intrare["tip"])
+        patrat_container = AnchorLayout(size_hint_x=None, width=dp(20),
+                                         anchor_x="center", anchor_y="center")
+        patrat_container.add_widget(patrat)
+
+        eticheta_continut = Label(
+            text=trunchiaza(intrare["continut"]),
+            color=CULOARE_TEXT, halign="left", valign="middle",
         )
-        self.eticheta_continut.bind(
-            size=lambda w, *_: setattr(w, "text_size", (w.width, None))
-        )
-        self.eticheta_continut.bind(texture_size=self._ajusteaza_inaltime)
+        eticheta_continut.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
 
-        self.add_widget(self.eticheta_data)
-        self.add_widget(self.eticheta_continut)
+        self.add_widget(eticheta_ora)
+        self.add_widget(patrat_container)
+        self.add_widget(eticheta_continut)
 
-    def _actualizeaza(self, *_args):
-        self._bg.pos = self.pos
-        self._bg.size = self.size
 
-    def _ajusteaza_inaltime(self, widget, dimensiune):
-        widget.height = dimensiune[1]
-        self.height = self.eticheta_data.height + widget.height + dp(6)
+class ListaIntrariZi(BoxLayout):
+    """Container vertical cu toate liniile (RandIntrare) unei zile."""
 
-    def seteaza_continut(self, zi_obj, date_mese):
-        self.eticheta_data.text = zi_obj.strftime("%d %B %Y")
-        if date_mese is None:
-            self.eticheta_continut.text = "(fara notite)"
+    def __init__(self, editabil=True, **kwargs):
+        super().__init__(orientation="vertical", size_hint_y=None, spacing=dp(2), **kwargs)
+        self.editabil = editabil
+        self.bind(minimum_height=self.setter("height"))
+
+    def actualizeaza(self, intrari, on_tap=None):
+        self.clear_widgets()
+        if not intrari:
+            gol = Label(
+                text="(fara notite)", size_hint_y=None, height=dp(26),
+                color=(0.45, 0.45, 0.45, 1), halign="left", valign="middle",
+            )
+            gol.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            self.add_widget(gol)
             return
-        linii = []
-        if date_mese["mic_dejun"]:
-            linii.append("Mic dejun: " + date_mese["mic_dejun"])
-        if date_mese["pranz"]:
-            linii.append("Pranz: " + date_mese["pranz"])
-        if date_mese["cina"]:
-            linii.append("Cina: " + date_mese["cina"])
-        self.eticheta_continut.text = "\n".join(linii) if linii else "(fara notite)"
+        for intrare in intrari:
+            rand = RandIntrare(intrare, on_tap=on_tap if self.editabil else None)
+            self.add_widget(rand)
+
+
+# ================= popup-uri =================
+
+
+class PopupIntrare(Popup):
+    """Popup pentru adaugarea/editarea unei intrari (mancare sau bautura)."""
+
+    def __init__(self, tip, bauturi_disponibile, intrare_existenta, on_salveaza, on_sterge, **kwargs):
+        titlu = "Adauga mancare" if tip == "mancare" else "Adauga bautura"
+        if intrare_existenta is not None:
+            titlu = "Editeaza mancare" if tip == "mancare" else "Editeaza bautura"
+        super().__init__(title=titlu, size_hint=(0.9, 0.55), **kwargs)
+
+        self.tip = tip
+        self.intrare_existenta = intrare_existenta
+        self.on_salveaza = on_salveaza
+        self.on_sterge = on_sterge
+
+        continut = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(10), padding=dp(12))
+
+        # --- ora ---
+        rand_ora = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
+        rand_ora.add_widget(Label(text="Ora:", size_hint_x=None, width=dp(50), color=CULOARE_TEXT))
+
+        ora_ini, minut_ini = "12", "00"
+        if intrare_existenta is not None:
+            ora_ini, minut_ini = intrare_existenta["ora"].split(":")
+
+        self.spinner_ora = Spinner(text=ora_ini, values=ORE, size_hint_x=0.5)
+        self.spinner_minut = Spinner(text=minut_ini, values=MINUTE, size_hint_x=0.5)
+        rand_ora.add_widget(self.spinner_ora)
+        rand_ora.add_widget(Label(text=":", size_hint_x=None, width=dp(14), color=CULOARE_TEXT))
+        rand_ora.add_widget(self.spinner_minut)
+        continut.add_widget(rand_ora)
+
+        # --- continut specific tipului ---
+        if tip == "mancare":
+            continut.add_widget(Label(text="Ce ai mancat:", size_hint_y=None, height=dp(20),
+                                       color=CULOARE_TEXT, halign="left"))
+            text_initial = intrare_existenta["continut"] if intrare_existenta else ""
+            self.txt_continut = TextInput(text=text_initial, multiline=True)
+            continut.add_widget(self.txt_continut)
+        else:
+            continut.add_widget(Label(text="Bautura:", size_hint_y=None, height=dp(20),
+                                       color=CULOARE_TEXT, halign="left"))
+            valori = bauturi_disponibile if bauturi_disponibile else ["Apa"]
+            text_initial = (
+                intrare_existenta["continut"]
+                if intrare_existenta and intrare_existenta["continut"] in valori
+                else valori[0]
+            )
+            self.spinner_bautura = Spinner(text=text_initial, values=valori)
+            continut.add_widget(self.spinner_bautura)
+
+        # --- butoane ---
+        rand_butoane = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(46), spacing=dp(8))
+        buton_salveaza = Button(text="Salveaza",
+                                 background_color=CULOARE_MANCARE if tip == "mancare" else CULOARE_BAUTURA)
+        buton_salveaza.bind(on_release=lambda *_: self._salveaza())
+        rand_butoane.add_widget(buton_salveaza)
+
+        if intrare_existenta is not None:
+            buton_sterge = Button(text="Sterge", background_color=(0.7, 0.3, 0.3, 1))
+            buton_sterge.bind(on_release=lambda *_: self._sterge())
+            rand_butoane.add_widget(buton_sterge)
+
+        buton_anuleaza = Button(text="Anuleaza")
+        buton_anuleaza.bind(on_release=lambda *_: self.dismiss())
+        rand_butoane.add_widget(buton_anuleaza)
+
+        continut.add_widget(rand_butoane)
+        self.content = continut
+
+    def _ora_text(self):
+        return "%s:%s" % (self.spinner_ora.text, self.spinner_minut.text)
+
+    def _salveaza(self):
+        ora = self._ora_text()
+        if self.tip == "mancare":
+            continut = self.txt_continut.text.strip()
+            if not continut:
+                return
+        else:
+            continut = self.spinner_bautura.text
+        id_existent = self.intrare_existenta["id"] if self.intrare_existenta else None
+        self.on_salveaza(id_existent, ora, self.tip, continut)
+        self.dismiss()
+
+    def _sterge(self):
+        self.on_sterge(self.intrare_existenta["id"])
+        self.dismiss()
+
+
+class PopupBauturi(Popup):
+    """Popup pentru administrarea listei de bauturi (adaugare/stergere)."""
+
+    def __init__(self, db, on_schimbare, **kwargs):
+        super().__init__(title="Lista de bauturi", size_hint=(0.9, 0.7), **kwargs)
+        self.db = db
+        self.on_schimbare = on_schimbare
+
+        radacina = FundalColorat(CULOARE_FUNDAL, orientation="vertical", spacing=dp(8), padding=dp(12))
+
+        self.scroll = ScrollView(size_hint=(1, 1))
+        self.lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
+        self.lista.bind(minimum_height=self.lista.setter("height"))
+        self.scroll.add_widget(self.lista)
+        radacina.add_widget(self.scroll)
+
+        rand_adauga = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
+        self.txt_noua = TextInput(hint_text="Bautura noua", multiline=False)
+        buton_adauga = Button(text="Adauga", size_hint_x=None, width=dp(90),
+                               background_color=(0.3, 0.6, 0.3, 1))
+        buton_adauga.bind(on_release=lambda *_: self._adauga())
+        rand_adauga.add_widget(self.txt_noua)
+        rand_adauga.add_widget(buton_adauga)
+        radacina.add_widget(rand_adauga)
+
+        buton_inchide = Button(text="Inchide", size_hint_y=None, height=dp(44))
+        buton_inchide.bind(on_release=lambda *_: self.dismiss())
+        radacina.add_widget(buton_inchide)
+
+        self.content = radacina
+        self._reincarca()
+
+    def _reincarca(self):
+        self.lista.clear_widgets()
+        for nume in self.db.bauturi_lista():
+            rand = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(36), spacing=dp(6))
+            eticheta = Label(text=nume, color=CULOARE_TEXT, halign="left", valign="middle")
+            eticheta.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            buton_sterge = Button(text="Sterge", size_hint_x=None, width=dp(80),
+                                   background_color=(0.7, 0.3, 0.3, 1))
+            buton_sterge.bind(on_release=lambda _inst, n=nume: self._sterge(n))
+            rand.add_widget(eticheta)
+            rand.add_widget(buton_sterge)
+            self.lista.add_widget(rand)
+
+    def _adauga(self):
+        nume = self.txt_noua.text.strip()
+        if not nume:
+            return
+        self.db.adauga_bautura(nume)
+        self.txt_noua.text = ""
+        self._reincarca()
+        self.on_schimbare()
+
+    def _sterge(self, nume):
+        self.db.sterge_bautura(nume)
+        self._reincarca()
+        self.on_schimbare()
+
+
+# ================= ecranul principal =================
 
 
 class EcranPrincipal(BoxLayout):
@@ -190,7 +448,7 @@ class EcranPrincipal(BoxLayout):
         bara_luna = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(48), spacing=dp(4))
         buton_prev = Button(text="<", size_hint_x=None, width=dp(48))
         buton_prev.bind(on_release=lambda *_: self.schimba_luna(-1))
-        self.eticheta_luna = Label(text="", bold=True, font_size="18sp")
+        self.eticheta_luna = Label(text="", bold=True, font_size="18sp", color=CULOARE_TEXT)
         buton_next = Button(text=">", size_hint_x=None, width=dp(48))
         buton_next.bind(on_release=lambda *_: self.schimba_luna(1))
         bara_luna.add_widget(buton_prev)
@@ -206,36 +464,41 @@ class EcranPrincipal(BoxLayout):
         # --- panou ziua selectata ---
         coloana.add_widget(self._separator("Ziua selectata"))
         self.eticheta_zi_selectata = Label(
-            text="", bold=True, size_hint_y=None, height=dp(24), color=(0, 0, 0, 1)
+            text="", bold=True, size_hint_y=None, height=dp(24), color=CULOARE_TEXT,
+            halign="left",
         )
+        self.eticheta_zi_selectata.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         coloana.add_widget(self.eticheta_zi_selectata)
 
-        self.txt_mic_dejun = self._creeaza_textinput()
-        self.txt_pranz = self._creeaza_textinput()
-        self.txt_cina = self._creeaza_textinput()
+        self.lista_zi = ListaIntrariZi(editabil=True)
+        coloana.add_widget(self.lista_zi)
 
-        coloana.add_widget(self._eticheta_camp("Mic dejun"))
-        coloana.add_widget(self.txt_mic_dejun)
-        coloana.add_widget(self._eticheta_camp("Pranz"))
-        coloana.add_widget(self.txt_pranz)
-        coloana.add_widget(self._eticheta_camp("Cina"))
-        coloana.add_widget(self.txt_cina)
+        rand_adauga = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(8))
+        buton_adauga_mancare = Button(text="+ Adauga mancare", background_color=CULOARE_MANCARE)
+        buton_adauga_mancare.bind(on_release=lambda *_: self.deschide_adaugare("mancare"))
+        buton_adauga_bautura = Button(text="+ Adauga bautura", background_color=CULOARE_BAUTURA)
+        buton_adauga_bautura.bind(on_release=lambda *_: self.deschide_adaugare("bautura"))
+        rand_adauga.add_widget(buton_adauga_mancare)
+        rand_adauga.add_widget(buton_adauga_bautura)
+        coloana.add_widget(rand_adauga)
 
-        rand_butoane = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(8))
-        buton_salveaza = Button(text="Salveaza", background_color=(0.3, 0.6, 0.3, 1))
-        buton_salveaza.bind(on_release=lambda *_: self.salveaza_ziua_curenta())
-        buton_sterge = Button(text="Sterge", background_color=(0.7, 0.3, 0.3, 1))
-        buton_sterge.bind(on_release=lambda *_: self.sterge_ziua_curenta())
-        rand_butoane.add_widget(buton_salveaza)
-        rand_butoane.add_widget(buton_sterge)
-        coloana.add_widget(rand_butoane)
+        buton_bauturi = Button(text="Editeaza lista de bauturi", size_hint_y=None, height=dp(38),
+                                background_color=(0.5, 0.5, 0.5, 1))
+        buton_bauturi.bind(on_release=lambda *_: self.deschide_lista_bauturi())
+        coloana.add_widget(buton_bauturi)
 
         # --- previzualizare zile anterioare ---
         coloana.add_widget(self._separator("Zilele anterioare"))
-        self.cutie_preview_1 = CutiePreview(size_hint_y=None)
-        self.cutie_preview_2 = CutiePreview(size_hint_y=None)
-        coloana.add_widget(self.cutie_preview_1)
-        coloana.add_widget(self.cutie_preview_2)
+
+        self.eticheta_zi_minus_1 = self._eticheta_data_preview()
+        self.lista_zi_minus_1 = ListaIntrariZi(editabil=False)
+        coloana.add_widget(self.eticheta_zi_minus_1)
+        coloana.add_widget(self.lista_zi_minus_1)
+
+        self.eticheta_zi_minus_2 = self._eticheta_data_preview()
+        self.lista_zi_minus_2 = ListaIntrariZi(editabil=False)
+        coloana.add_widget(self.eticheta_zi_minus_2)
+        coloana.add_widget(self.lista_zi_minus_2)
 
         scroll.add_widget(coloana)
         self.add_widget(scroll)
@@ -255,18 +518,11 @@ class EcranPrincipal(BoxLayout):
             color=(0.2, 0.2, 0.2, 1),
         )
 
-    def _eticheta_camp(self, text):
-        return Label(
-            text=text, size_hint_y=None, height=dp(18), color=(0.25, 0.25, 0.25, 1),
-            halign="left",
-        )
-
-    def _creeaza_textinput(self):
-        ti = TextInput(
-            text="", multiline=True, size_hint_y=None, height=dp(70),
-            font_size="15sp",
-        )
-        return ti
+    def _eticheta_data_preview(self):
+        et = Label(text="", bold=True, size_hint_y=None, height=dp(20),
+                    color=(0.3, 0.3, 0.3, 1), halign="left", valign="middle")
+        et.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        return et
 
     # ---------- logica calendar ----------
 
@@ -298,8 +554,9 @@ class EcranPrincipal(BoxLayout):
         cal = calendar.Calendar(firstweekday=0)
         zile_cu_date = self.db.zile_cu_date_in_luna(self.an_curent, self.luna_curenta)
         azi = data_azi()
+        zile_luna = list(cal.itermonthdates(self.an_curent, self.luna_curenta))
 
-        for zi_obj in cal.itermonthdates(self.an_curent, self.luna_curenta):
+        for zi_obj in zile_luna:
             in_luna_curenta = zi_obj.month == self.luna_curenta
             zi_str = zi_obj.isoformat()
 
@@ -323,55 +580,94 @@ class EcranPrincipal(BoxLayout):
 
             self.container_grila.add_widget(buton)
 
-        nr_randuri = self.container_grila.height  # recalculat mai jos
-        randuri = len(list(cal.itermonthdates(self.an_curent, self.luna_curenta))) // 7 + 1
+        randuri = len(zile_luna) // 7 + 1
         self.container_grila.height = dp(24) + randuri * dp(42)
 
     def selecteaza_ziua(self, zi_obj):
         self.zi_selectata = zi_obj
         self.eticheta_zi_selectata.text = zi_obj.strftime("%A, %d %B %Y")
 
-        date_zi = self.db.citeste(zi_obj.isoformat())
-        self.txt_mic_dejun.text = date_zi["mic_dejun"] if date_zi else ""
-        self.txt_pranz.text = date_zi["pranz"] if date_zi else ""
-        self.txt_cina.text = date_zi["cina"] if date_zi else ""
+        intrari = self.db.intrari_pentru_zi(zi_obj.isoformat())
+        self.lista_zi.actualizeaza(intrari, on_tap=self.deschide_editare)
 
         zi_minus_1 = zi_obj - timedelta(days=1)
         zi_minus_2 = zi_obj - timedelta(days=2)
-        self.cutie_preview_1.seteaza_continut(zi_minus_1, self.db.citeste(zi_minus_1.isoformat()))
-        self.cutie_preview_2.seteaza_continut(zi_minus_2, self.db.citeste(zi_minus_2.isoformat()))
+        self.eticheta_zi_minus_1.text = zi_minus_1.strftime("%d %B %Y")
+        self.eticheta_zi_minus_2.text = zi_minus_2.strftime("%d %B %Y")
+        self.lista_zi_minus_1.actualizeaza(self.db.intrari_pentru_zi(zi_minus_1.isoformat()))
+        self.lista_zi_minus_2.actualizeaza(self.db.intrari_pentru_zi(zi_minus_2.isoformat()))
 
-        # daca luna afisata nu contine ziua selectata, mutam calendarul pe ea
         if zi_obj.month != self.luna_curenta or zi_obj.year != self.an_curent:
             self.an_curent = zi_obj.year
             self.luna_curenta = zi_obj.month
         self.construieste_grila()
 
-    def salveaza_ziua_curenta(self):
-        self.db.salveaza(
-            self.zi_selectata.isoformat(),
-            self.txt_mic_dejun.text.strip(),
-            self.txt_pranz.text.strip(),
-            self.txt_cina.text.strip(),
-        )
-        self.construieste_grila()
-        self._mesaj("Salvat pentru %s" % self.zi_selectata.strftime("%d %B %Y"))
+    # ---------- adaugare / editare intrari ----------
 
-    def sterge_ziua_curenta(self):
-        self.db.sterge(self.zi_selectata.isoformat())
-        self.txt_mic_dejun.text = ""
-        self.txt_pranz.text = ""
-        self.txt_cina.text = ""
-        self.construieste_grila()
-        self._mesaj("Sters pentru %s" % self.zi_selectata.strftime("%d %B %Y"))
-
-    def _mesaj(self, text):
-        popup = Popup(
-            title="", content=Label(text=text), size_hint=(0.7, 0.2), auto_dismiss=True
+    def deschide_adaugare(self, tip):
+        popup = PopupIntrare(
+            tip=tip,
+            bauturi_disponibile=self.db.bauturi_lista(),
+            intrare_existenta=None,
+            on_salveaza=self._salveaza_intrare,
+            on_sterge=self._sterge_intrare,
         )
         popup.open()
-        from kivy.clock import Clock
-        Clock.schedule_once(lambda *_: popup.dismiss(), 1.0)
+
+    def deschide_editare(self, intrare):
+        popup = PopupIntrare(
+            tip=intrare["tip"],
+            bauturi_disponibile=self.db.bauturi_lista(),
+            intrare_existenta=intrare,
+            on_salveaza=self._salveaza_intrare,
+            on_sterge=self._sterge_intrare,
+        )
+        popup.open()
+
+    def _salveaza_intrare(self, id_existent, ora, tip, continut):
+        zi_str = self.zi_selectata.isoformat()
+        if id_existent is None:
+            self.db.adauga_intrare(zi_str, ora, tip, continut)
+        else:
+            self.db.actualizeaza_intrare(id_existent, ora, tip, continut)
+        self.selecteaza_ziua(self.zi_selectata)
+
+    def _sterge_intrare(self, id_intrare):
+        self.db.sterge_intrare(id_intrare)
+        self.selecteaza_ziua(self.zi_selectata)
+
+    def deschide_lista_bauturi(self):
+        popup = PopupBauturi(self.db, on_schimbare=lambda: self.selecteaza_ziua(self.zi_selectata))
+        popup.open()
+
+
+# ================= ecran de bun venit =================
+
+
+class EcranBunVenit(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        radacina = BoxLayout(orientation="vertical")
+        with radacina.canvas.before:
+            Color(*CULOARE_FUNDAL)
+            self._bg = Rectangle(pos=radacina.pos, size=radacina.size)
+        radacina.bind(pos=self._actualizeaza_bg, size=self._actualizeaza_bg)
+
+        mesaj = Label(
+            markup=True,
+            text="[size=24][color=333333]Pentru tine,[/color][/size]\n[size=36][b][color=C9971F]BUCURIA MEA[/color][/b][/size]",
+            halign="center", valign="middle",
+        )
+        mesaj.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        radacina.add_widget(mesaj)
+        self.add_widget(radacina)
+
+    def _actualizeaza_bg(self, widget, *_args):
+        self._bg.pos = widget.pos
+        self._bg.size = widget.size
+
+
+# ================= aplicatia =================
 
 
 class JurnalAlimentarApp(App):
@@ -381,7 +677,20 @@ class JurnalAlimentarApp(App):
         Window.clearcolor = CULOARE_FUNDAL
         cale_db = os.path.join(self.user_data_dir, "jurnal_alimentar.db")
         self.db = BazaDeDate(cale_db)
-        return EcranPrincipal(self.db)
+
+        sm = ScreenManager(transition=FadeTransition(duration=0.3))
+
+        ecran_bun_venit = EcranBunVenit(name="bun_venit")
+        sm.add_widget(ecran_bun_venit)
+
+        ecran_principal = Screen(name="principal")
+        ecran_principal.add_widget(EcranPrincipal(self.db))
+        sm.add_widget(ecran_principal)
+
+        sm.current = "bun_venit"
+        Clock.schedule_once(lambda *_: setattr(sm, "current", "principal"), 2.0)
+
+        return sm
 
 
 if __name__ == "__main__":
